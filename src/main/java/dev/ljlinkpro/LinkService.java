@@ -16,17 +16,24 @@ import java.util.concurrent.TimeUnit;
 /**
  * Sends the tempo of the leading deck to a lighting desk or software: to a grandMA2 as a command line over Telnet, to a
  * grandMA3 as a command line over OSC, to anything else as an OSC number, to the Wolfmix software (WTOOLS) and other
- * OS2L receivers as a beat on every beat. Output only: LJ Link never receives from or controls the DJ gear through this.
+ * OS2L receivers as a beat on every beat, or to a Chamsys lighting console (magicQ, swift) via OSC. Output only: LJ Link
+ * never receives from or controls the DJ gear through this.
  */
 final class LinkService {
     /**
      * {@code type}: "off", "ma2" (grandMA2 / onPC command line over Telnet, with {@code user} and {@code password}),
-     * "ma" (grandMA3 / onPC command line over OSC {@code /cmd}), "osc" (the tempo as an OSC number to {@code address})
-     * or "os2l" (beats and tempo as OS2L messages over TCP, for the Wolfmix software WTOOLS).
+     * "ma" (grandMA3 / onPC command line over OSC {@code /cmd}), "osc" (the tempo as an OSC number to {@code address}),
+     * "os2l" (beats and tempo as OS2L messages over TCP, for the Wolfmix software WTOOLS) or "chamsys" (the tempo as an
+     * OSC number to {@code address}, for a Chamsys lighting console).
      */
     record Config(String type, String host, int port, String address, String command, String user, String password) {
         static Config off() {
             return new Config("off", "127.0.0.1", 8000, "/ljlinkpro/bpm", MA3_COMMAND, "", "");
+        }
+
+        /** Chamsys sends an OSC integer (taps per beat), so the port can be the default 8000. */
+        static Config chamsys(String host) {
+            return new Config("chamsys", host == null ? "127.0.0.1" : host, 8000, "/chamsys/bpm", "", "", "");
         }
     }
 
@@ -98,7 +105,7 @@ final class LinkService {
     }
 
     void setConfig(Config c) throws IOException {
-        String type = java.util.List.of("off", "ma2", "ma", "osc", "os2l").contains(c.type()) ? c.type() : "off";
+        String type = java.util.List.of("off", "ma2", "ma", "osc", "os2l", "chamsys").contains(c.type()) ? c.type() : "off";
         Config clean = new Config(
                 type,
                 c.host() == null ? "127.0.0.1" : c.host().trim(),
@@ -159,23 +166,28 @@ final class LinkService {
     /** Sends a fixed tempo once so the user can check the connection and the mapping on the desk. */
     void sendTest() {
         Config c = config;
-        if (c.type().equals("os2l")) {
+        if (c.type().equals("os2l") || c.type().equals("chamsys")) {
             // Eight beats at 120 BPM, off the beat thread so the call returns at once.
             Thread t = new Thread(() -> {
                 try {
                     for (int i = 0; i < 8; i++) {
-                        os2l.beat(c.host(), c.port(), i == 0, i, 120.0);
+                        if (c.type().equals("os2l")) {
+                            os2l.beat(c.host(), c.port(), i == 0, i, 120.0);
+                        } else {
+                            // Chamsys: one OSC message per beat
+                            sendOsc(c.host(), c.port(), c.address(), (float) 120.0);
+                        }
                         sentCount++;
                         lastBpm = 120.0;
                         error = null;
                         Thread.sleep(500);
                     }
                 } catch (IOException e) {
-                    error = os2lError(c, e);
+                    error = "Sending to " + c.host() + ":" + c.port() + " failed: " + e.getMessage();
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                 }
-            }, "os2l-test");
+            }, c.type().equals("chamsys") ? "chamsys-test" : "os2l-test");
             t.setDaemon(true);
             t.start();
             return;
@@ -193,6 +205,32 @@ final class LinkService {
         try {
             Config c = config;
             if (!c.type().equals("os2l")) {
+                // For Chamsys, also send a beat - this is how it receives tempo (one message per beat)
+                if (c.type().equals("chamsys")) {
+                    Deck lead = leadingDeck();
+                    if (lead != null && lead.scope != null && "demo".equals(lead.scope.kind)) {
+                        return; // the demo tempo never reaches a real receiver; tick() explains it in the status
+                    }
+                    Os2lBeats.Beat beat = beats.next(lead, System.nanoTime());
+                    if (beat == null) {
+                        return;
+                    }
+                    long now = System.currentTimeMillis();
+                    if (now < beatRetryAt) {
+                        return;
+                    }
+                    try {
+                        // Send OSC beat for Chamsys: address + float BPM
+                        sendOsc(c.host(), c.port(), c.address(), (float) beat.bpm());
+                        sentCount++;
+                        lastBpm = beat.bpm();
+                        lastSentAt = now;
+                    } catch (IOException e) {
+                        error = "Sending to " + c.host() + ":" + c.port() + " failed: " + e.getMessage();
+                        beatRetryAt = now + 5000;
+                    }
+                    return;
+                }
                 return;
             }
             Deck lead = leadingDeck();
@@ -221,6 +259,14 @@ final class LinkService {
             }
         } catch (RuntimeException e) {
             error = e.getMessage();
+        }
+    }
+
+    /** Sends an OSC address+value for Chamsys beats. */
+    private void sendOsc(String host, int port, String address, float value) throws IOException {
+        try (DatagramSocket socket = new DatagramSocket()) {
+            byte[] packet = osc(address, value);
+            socket.send(new DatagramPacket(packet, packet.length, InetAddress.getByName(host), port));
         }
     }
 
@@ -302,7 +348,7 @@ final class LinkService {
             if (error != null && (error.startsWith("The chosen deck") || error.startsWith("Demo mode"))) {
                 error = null;
             }
-            if (c.type().equals("os2l")) {
+            if (c.type().equals("os2l") || c.type().equals("chamsys")) {
                 return; // beats go out from beatTick()
             }
             double bpm = lead.effectiveBpm;

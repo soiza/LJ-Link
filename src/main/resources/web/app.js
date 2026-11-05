@@ -198,6 +198,8 @@ const LINK_PRESETS = {
               hint: "The tempo is sent as a number (float) to this address." },
   wolfmix:  { type: "os2l", port: 5000, text: "", noText: true, noScan: true,
               hint: "ALPHA, UNTESTED: never tried on a real Wolfmix, do not rely on it yet. Wolfmix (WTOOLS) and other OS2L software. Start WTOOLS on the computer the Wolfmix is plugged into, switch OS2L on there and enter that computer's address (127.0.0.1 if it is this one). LJ Link sends the tempo and every beat. On the Wolfmix, push the first encoder in an FX rack so it follows the BPM. See the Wolfmix guide, and please report how it went." },
+  chamsys:  { type: "osc", port: 8000, text: "/chamsys/bpm", label: "OSC address",
+              hint: "Chamsys (magicQ). One OSC message is sent per beat with the BPM as a float at this address. On the desk: Setup, OSC, add an input on the given IP and port, then map the address to the BPM. The tempo follows the beat clock, just like OS2L." },
 };
 
 /* Speed masters of the grandMA: 1 to 15, and 16, which is the BPM master. The choice is written into the command. */
@@ -222,6 +224,7 @@ function syncSpeedFromCommand() {
 
 function linkPresetFromConfig(c) {
   if (c.type === "off") return "off";
+  if (c.type === "chamsys") return "chamsys";
   if (c.type === "osc") return ui.linkPreset === "daslight" ? "daslight" : "osc";
   if (c.type === "ma2") return "grandma2";
   if (c.type === "os2l") return "wolfmix";
