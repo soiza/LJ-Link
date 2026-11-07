@@ -192,14 +192,18 @@ const LINK_PRESETS = {
               hint: "grandMA2 console or onPC, over Telnet. On the desk: Setup, Console, Global Settings, Telnet: Login Enabled. Default user of every show: administrator, password admin (change it if your show uses another). {bpm} is replaced by the tempo. Step by step: see the light desk guide." },
   grandma:  { type: "ma",  port: 8000, text: "Master 3.1 At BPM {bpm}", speed: true, label: "Command on the desk",
               hint: "grandMA3 console or onPC, over OSC. On the desk: Menu, In & Out, OSC: a line with this port, Mode UDP, Receive Command Yes, then Enable Input. {bpm} is replaced by the tempo. Step by step: see the light desk guide." },
-  daslight: { type: "osc", port: 8000, text: "/ljlinkpro/bpm", label: "OSC address",
-              hint: "Daslight receives this address as a number over OSC; map it in Daslight's OSC mapping. Whether your Daslight version can set the BPM this way is not confirmed yet, see the light desk guide." },
+  daslightLink: { type: "ableton", noTarget: true, noText: true, noScan: true, noTest: true,
+              hint: "Recommended for Daslight: LJ Link leads the Ableton Link session with the tempo, beats and bars of the deck chosen in SEND BPM, and switches Ableton Link on below if it is off. In Daslight: Settings, MIDI / Audio / BPM, BPM source Ableton Link Sync. Both computers must be in the same network. See the Daslight guide." },
+  wolfmixLink: { type: "ableton", noTarget: true, noText: true, noScan: true, noTest: true,
+              hint: "Recommended for Wolfmix: LJ Link leads the Ableton Link session with the tempo, beats and bars of the deck chosen in SEND BPM, and switches Ableton Link on below if it is off. On the Wolfmix side choose Ableton Link as the BPM source (in WTOOLS). Both computers must be in the same network. See the Wolfmix guide." },
+  daslight: { type: "daslight", port: 7000, text: "/ljlink/tap", label: "OSC address of the tap (several: separate by comma)",
+              hint: "Daslight cannot take the BPM as a number over OSC, so LJ Link sends a tap (an OSC message with the value 255, then 0) on every beat of the leading deck. In Daslight: Settings, OSC, OSC Input on, Incoming Port as here; then map this address to BPM Tap (target Global) in the OSC mappings. Ableton Link is more exact, see the Daslight guide." },
   osc:      { type: "osc", port: 8000, text: "/ljlinkpro/bpm", label: "OSC address",
               hint: "The tempo is sent as a number (float) to this address." },
+  chamsys:  { type: "chamsys", port: 8000, text: "/tap", label: "OSC address of the tap (several: separate by comma)",
+              hint: "ALPHA, UNTESTED: never tried on a real MagicQ, do not rely on it yet. ChamSys MagicQ has no OSC address for a BPM, so LJ Link sends a tap (an OSC message with the value 255, then 0) on every beat of the leading deck. On the desk: Setup, View Settings, Network: OSC Mode Rx, OSC Rx Port as here. Then in the Macro window, Autom view, add a row of type OSC Message with this address (up to 15 characters) and the action Tap to Time (or Global Tap to Time). See the ChamSys guide, and please report how it went." },
   wolfmix:  { type: "os2l", port: 5000, text: "", noText: true, noScan: true,
-              hint: "ALPHA, UNTESTED: never tried on a real Wolfmix, do not rely on it yet. Wolfmix (WTOOLS) and other OS2L software. Start WTOOLS on the computer the Wolfmix is plugged into, switch OS2L on there and enter that computer's address (127.0.0.1 if it is this one). LJ Link sends the tempo and every beat. On the Wolfmix, push the first encoder in an FX rack so it follows the BPM. See the Wolfmix guide, and please report how it went." },
-  chamsys:  { type: "osc", port: 8000, text: "/chamsys/bpm", label: "OSC address",
-              hint: "Chamsys (magicQ). One OSC message is sent per beat with the BPM as a float at this address. On the desk: Setup, OSC, add an input on the given IP and port, then map the address to the BPM. The tempo follows the beat clock, just like OS2L." },
+              hint: "BETA: tried on a Wolfmix W1; Ableton Link is more exact. Wolfmix (WTOOLS) and other OS2L software. Start WTOOLS on the computer the Wolfmix is plugged into, switch OS2L on there and enter that computer's address (127.0.0.1 if it is this one). LJ Link sends the tempo and every beat. On the Wolfmix, push the first encoder in an FX rack so it follows the BPM. See the Wolfmix guide, and please report how it went." },
 };
 
 /* Speed masters of the grandMA: 1 to 15, and 16, which is the BPM master. The choice is written into the command. */
@@ -228,6 +232,9 @@ function linkPresetFromConfig(c) {
   if (c.type === "osc") return ui.linkPreset === "daslight" ? "daslight" : "osc";
   if (c.type === "ma2") return "grandma2";
   if (c.type === "os2l") return "wolfmix";
+  if (c.type === "chamsys") return "chamsys";
+  if (c.type === "daslight") return "daslight";
+  if (c.type === "ableton") return ui.linkPreset === "wolfmixLink" ? "wolfmixLink" : "daslightLink";
   return "grandma";
 }
 
@@ -239,6 +246,8 @@ function showLinkFields(preset) {
   $("link-login").classList.toggle("hidden", !p.login);
   $("link-speed-row").classList.toggle("hidden", !p.speed);
   $("link-text").classList.toggle("hidden", !!p.noText);
+  $("link-target-row").classList.toggle("hidden", !!p.noTarget);
+  $("link-test").classList.toggle("hidden", !!p.noTest);
   $("link-scan-row").classList.toggle("hidden", !!p.noScan);
   $("link-found").classList.toggle("hidden", !!p.noScan);
   syncSpeedFromCommand();
@@ -258,13 +267,48 @@ async function loadLink() {
     $("link-user").value = c.user || (c.type === "ma2" ? LINK_PRESETS.grandma2.user : "");
     $("link-pass").value = c.password || (c.type === "ma2" && !c.user ? LINK_PRESETS.grandma2.password : "");
     showLinkFields(preset);
+    const hasDemo = (res.decks || []).some(d => d.kind === "demo");
+    $("send-demo-row").classList.toggle("hidden", !hasDemo || c.type === "off");
+    $("send-demo").checked = !!res.sendDemo;
     const st = res.status;
-    $("link-status").textContent = st.error ? t(st.error)
+    if (c.type === "ableton") {
+      let ablOn = false;
+      try { ablOn = (await (await fetch("/api/ableton")).json()).enabled; } catch (e) { /* computer only */ }
+      $("link-status").textContent = ablOn ? t("The tempo goes out over Ableton Link, see the Ableton Link section below.")
+        : t("Ableton Link is switched off: switch it on below, or press Save.");
+    } else $("link-status").textContent = st.error ? t(st.error)
       : st.sentCount ? t("Last sent: {bpm} BPM ({n} messages)", { bpm: st.bpm == null ? "–" : st.bpm.toFixed(1), n: st.sentCount }) : "";
   } catch (e) { /* link settings are only available on the computer itself */
     $("link-setting").classList.add("hidden");
   }
+  loadAbleton();
 }
+
+async function loadAbleton() {
+  try {
+    const s = await (await fetch("/api/ableton")).json();
+    $("abl-on").checked = s.enabled;
+    $("abl-phase").checked = s.phase;
+    $("abl-phase").disabled = !s.enabled;
+    let text = "";
+    if (s.enabled) {
+      const peers = s.peers === 1 ? t("1 other program") : t("{n} other programs", { n: s.peers });
+      text = t("Session: {bpm} BPM, {peers}", { bpm: s.bpm == null ? "–" : s.bpm.toFixed(2), peers });
+      if (s.note) text += " · " + t(s.note);
+    }
+    $("abl-status").textContent = text;
+  } catch (e) { /* only available on the computer itself */
+    $("abl-setting").classList.add("hidden");
+  }
+}
+
+async function saveAbleton() {
+  await fetch("/api/ableton", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled: $("abl-on").checked, phase: $("abl-phase").checked }) });
+  loadAbleton();
+}
+$("abl-on").onchange = saveAbleton;
+$("abl-phase").onchange = saveAbleton;
 
 function linkBody() {
   const preset = $("link-target").value;
@@ -274,7 +318,7 @@ function linkBody() {
     type: preset,
     host: $("link-host").value || "127.0.0.1",
     port: Number($("link-port").value) || 8000,
-    address: preset === "chamsys" ? ($("link-text").value || "/chamsys/bpm") : (p.type === "osc" ? text : "/ljlinkpro/bpm"),
+    address: p.type === "osc" || p.type === "chamsys" || p.type === "daslight" ? text : "/ljlinkpro/bpm",
     command: p.type === "ma" || p.type === "ma2" ? text : "",
     user: p.login ? $("link-user").value : "",
     password: p.login ? $("link-pass").value : "",
@@ -287,19 +331,25 @@ $("link-target").onchange = () => {
   try { localStorage.setItem("ljlinkpro.linkPreset", preset); } catch (e) { /* ignore */ }
   ui.linkPreset = preset;
   if (preset !== "off") {
-    $("link-port").value = p.port;
-    $("link-text").value = p.text;
+    $("link-port").value = p.port || "";
+    $("link-text").value = p.text || "";
     if (p.noScan && $("link-host").value === "") $("link-host").value = "127.0.0.1";
     // A new grandMA2 show always has the user "administrator" with the password "admin".
     if (p.login && !$("link-user").value) { $("link-user").value = p.user; $("link-pass").value = p.password; }
     if (!$("link-host").value) $("link-host").value = "127.0.0.1";
   }
   showLinkFields(preset);
-  if (preset === "off") saveLink();
+  // Off and Daslight over Ableton Link need nothing typed in, so they take effect at once.
+  if (preset === "off" || p.type === "ableton") saveLink();
 };
 
 async function saveLink() {
   await fetch("/api/link", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(linkBody()) });
+  // Daslight over Ableton Link: switch on leading the Link session if it is not on yet.
+  if (LINK_PRESETS[$("link-target").value].type === "ableton" && !$("abl-on").checked) {
+    $("abl-on").checked = true;
+    await saveAbleton();
+  }
   loadLink();
 }
 
@@ -342,6 +392,13 @@ $("link-save").onclick = saveLink;
 $("link-test").onclick = async () => {
   await saveLink();
   await fetch("/api/link/test", { method: "POST" });
+  setTimeout(loadLink, 400);
+};
+
+$("send-demo").onchange = async () => {
+  await saveLink();
+  await fetch("/api/link/senddemo", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ on: $("send-demo").checked }) });
   setTimeout(loadLink, 400);
 };
 
@@ -390,6 +447,7 @@ function createDeck(n) {
       <div class="chan">
         <div class="fader binary" title=""><i></i></div>
         <span class="chip send hidden">SEND BPM</span>
+        <span class="chip abl hidden">LINK</span>
         <div class="knobs hidden">
           <span class="knob" data-eq="hi">HI<span class="dial"></span></span>
           <span class="knob" data-eq="mid">MID<span class="dial"></span></span>
@@ -504,6 +562,7 @@ function updateDeck(m) {
   setText(d, "num", d.q(".deck-num"), m.label);
   setText(d, "dev", d.q(".dev-name"), m.groupName || "");
   d.q(".chip.send").classList.toggle("hidden", !m.sendingBpm);
+  d.q(".chip.abl").classList.toggle("hidden", !m.sendingLink);
   setText(d, "kind", d.q(".box.player small"), m.kind === "denon" || m.kind === "serato" ? "DECK" : m.kind === "link" ? "LINK" : "PLAYER");
   if (isNew || d.order !== m.order) { d.order = m.order; sortDecks(); }
   d.el.classList.toggle("hidden", hiddenGroups.has(m.group));
@@ -515,7 +574,10 @@ function updateDeck(m) {
   d.q(".deck-title").textContent = t(m.hasTrack ? (ui.state.privacy ? "Title hidden" : (shownTitle || "Loading track …")) : "No track loaded");
   d.q(".deck-artist").textContent = m.hasTrack && !ui.state.privacy ? (shownArtist || "") : "";
   d.q(".remain-main small").textContent = t("REMAIN");
-  d.q(".bpm-val").textContent = m.hasTrack && m.effectiveBpm ? m.effectiveBpm.toFixed(1) : "--";
+  // The real tempo of the player (two decimals). The steadied tempo that goes to the light desks is in the tooltip.
+  const shownBpm = m.effectiveBpm || m.stableBpm;
+  d.q(".bpm-val").textContent = m.hasTrack && shownBpm ? shownBpm.toFixed(2) : "--";
+  d.q(".bpm-box").title = m.hasTrack && m.stableBpm ? t("Sent to light desks: {bpm} BPM", { bpm: m.stableBpm.toFixed(1) }) : "";
   d.q(".track-no").textContent = m.hasTrack && m.trackNumber ? two(m.trackNumber) : "--";
   d.q(".pitch").textContent = m.hasTrack ? (m.pitch >= 0 ? "+" : "") + m.pitch.toFixed(2) + "%" : "";
   d.q(".key-box").innerHTML = m.hasTrack && m.key ? "<small>KEY</small>" + m.key.replace(/[<&]/g, "") : "";
@@ -1420,10 +1482,17 @@ async function loadBpm() {
     };
     option("auto", t("Auto"), t("The deck that is master and/or live"));
     for (const d of res.decks) option(d.key, deckLabel(d), "");
+    option("manual", t("Fixed value"), "");
     // A chosen deck that is not there right now stays visible, so the choice is not lost silently.
-    if (st.source !== "auto" && !res.decks.some(d => d.key === st.source)) option(st.source, t("Chosen deck (not connected)"), "");
+    if (st.source !== "auto" && st.source !== "manual" && !res.decks.some(d => d.key === st.source)) option(st.source, t("Chosen deck (not connected)"), "");
   }
   // Live values without rebuilding the list.
+  const manualSub = list.querySelector('[data-value="manual"] .bpm-sub');
+  if (manualSub) manualSub.textContent = Number(res.manualBpm).toFixed(1) + " BPM";
+  if (!bpmManualBusy) {
+    $("manual-bpm").value = Number(res.manualBpm);
+    $("manual-range").value = Math.max(60, Math.min(180, Number(res.manualBpm)));
+  }
   for (const d of res.decks) {
     const el = list.querySelector(`[data-value="${CSS.escape(d.key)}"] .bpm-sub`);
     if (!el) continue;
@@ -1432,6 +1501,25 @@ async function loadBpm() {
   }
   list.querySelectorAll(".bpm-option").forEach(l => l.classList.toggle("sending", !!sending && (l.dataset.value === sending || (st.source === "auto" && l.dataset.value === "auto"))));
 }
+
+/* The fixed value: typing or sliding sets the tempo, and chooses the fixed value as the source. */
+let bpmManualBusy = false, bpmManualTimer = null;
+function setManualBpm(value, fromRange) {
+  const bpm = Math.max(30, Math.min(300, Number(value)));
+  if (!isFinite(bpm)) return;
+  bpmManualBusy = true;
+  if (fromRange) $("manual-bpm").value = bpm; else $("manual-range").value = Math.max(60, Math.min(180, bpm));
+  clearTimeout(bpmManualTimer);
+  bpmManualTimer = setTimeout(async () => {
+    await fetch("/api/link/manual", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ bpm }) });
+    const chosen = document.querySelector('input[name="bpm-source"]:checked');
+    if (!chosen || chosen.value !== "manual") await setBpmSource("manual");
+    bpmManualBusy = false;
+    loadBpm();
+  }, 120);
+}
+$("manual-range").addEventListener("input", () => setManualBpm($("manual-range").value, true));
+$("manual-bpm").addEventListener("input", () => { if ($("manual-bpm").value !== "") setManualBpm($("manual-bpm").value, false); });
 
 function deckLabel(d) {
   return (d.kind === "denon" ? "Deck " : "Player ") + d.label + (d.name ? " · " + d.name : "");

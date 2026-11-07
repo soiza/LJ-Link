@@ -16,15 +16,17 @@ import java.util.concurrent.TimeUnit;
 /**
  * Sends the tempo of the leading deck to a lighting desk or software: to a grandMA2 as a command line over Telnet, to a
  * grandMA3 as a command line over OSC, to anything else as an OSC number, to the Wolfmix software (WTOOLS) and other
- * OS2L receivers as a beat on every beat, or to a Chamsys lighting console (magicQ, swift) via OSC. Output only: LJ Link
- * never receives from or controls the DJ gear through this.
+ * OS2L receivers as a beat on every beat, and to a ChamSys MagicQ as an OSC tap on every beat. Output only: LJ Link never
+ * receives from or controls the DJ gear through this.
  */
 final class LinkService {
     /**
      * {@code type}: "off", "ma2" (grandMA2 / onPC command line over Telnet, with {@code user} and {@code password}),
-     * "ma" (grandMA3 / onPC command line over OSC {@code /cmd}), "osc" (the tempo as an OSC number to {@code address}),
-     * "os2l" (beats and tempo as OS2L messages over TCP, for the Wolfmix software WTOOLS) or "chamsys" (the tempo as an
-     * OSC number to {@code address}, for a Chamsys lighting console).
+     * "ma" (grandMA3 / onPC command line over OSC {@code /cmd}), "osc" (the tempo as an OSC number to {@code address})
+     * "os2l" (beats and tempo as OS2L messages over TCP, for the Wolfmix software WTOOLS) or "chamsys" (an OSC message
+     * without argument on every beat to each address in {@code address}, a comma separated list; MagicQ maps it to Tap to Time),
+     * "daslight" (the same taps with the value 255, then 0, for Daslight's BPM TAP) or "ableton" (nothing from here: the
+     * Ableton Link peer leads the session with the deck chosen in SEND BPM; Daslight's recommended way).
      */
     record Config(String type, String host, int port, String address, String command, String user, String password) {
         static Config off() {
@@ -37,6 +39,7 @@ final class LinkService {
         }
     }
 
+    static final String CHAMSYS_ADDRESS = "/tap";
     static final String MA2_COMMAND = "SpecialMaster 3.16 At {bpm}";
     /** Every grandMA2 show has these users: "Administrator" with the password "admin", and "Guest". */
     static final String MA2_DEFAULT_USER = "administrator";
@@ -59,6 +62,11 @@ final class LinkService {
     private static final Path FILE = Path.of(System.getProperty("user.home"), ".ljlinkpro", "link.json");
     private static final Path SOURCE_FILE = Path.of(System.getProperty("user.home"), ".ljlinkpro", "link-source.txt");
     static final String AUTO = "auto";
+    /** The source "fixed value": a deck that only exists to send a tempo the user types in (tests, or no DJ gear). */
+    static final String MANUAL = "manual";
+    static final double MANUAL_MIN = 30, MANUAL_MAX = 300;
+    private final Deck manualDeck = new Deck(0);
+    private volatile double manualBpm = 120;
     private static final long KEEPALIVE_MS = 2000;
 
     private final Hub hub;
@@ -105,12 +113,13 @@ final class LinkService {
     }
 
     void setConfig(Config c) throws IOException {
-        String type = java.util.List.of("off", "ma2", "ma", "osc", "os2l", "chamsys").contains(c.type()) ? c.type() : "off";
+        String type = java.util.List.of("off", "ma2", "ma", "osc", "os2l", "chamsys", "daslight", "ableton").contains(c.type()) ? c.type() : "off";
         Config clean = new Config(
                 type,
                 c.host() == null ? "127.0.0.1" : c.host().trim(),
                 c.port() < 1 || c.port() > 65535 ? ("ma2".equals(type) ? Ma2Telnet.PORT : "os2l".equals(type) ? Os2lClient.PORT : 8000) : c.port(),
-                c.address() == null || c.address().isBlank() ? "/ljlinkpro/bpm" : c.address().trim(),
+                isTap(type) ? String.join(",", tapAddresses(c.address()))
+                        : c.address() == null || c.address().isBlank() ? "/ljlinkpro/bpm" : c.address().trim(),
                 c.command() == null || c.command().isBlank() ? ("ma2".equals(type) ? MA2_COMMAND : MA3_COMMAND) : c.command().trim(),
                 "ma2".equals(type) && (c.user() == null || c.user().isBlank()) ? MA2_DEFAULT_USER : c.user() == null ? "" : c.user().trim(),
                 "ma2".equals(type) && (c.user() == null || c.user().isBlank()) && (c.password() == null || c.password().isEmpty())
@@ -129,6 +138,37 @@ final class LinkService {
 
     String source() {
         return source;
+    }
+
+    /** The key of a deck as SEND BPM names it; the fixed value is "manual". */
+    String keyOf(Deck d) {
+        return d == manualDeck ? MANUAL : d.key();
+    }
+
+    double manualBpm() {
+        return manualBpm;
+    }
+
+    /** Sets the fixed tempo; it is sent when the source "manual" is chosen. */
+    void setManualBpm(double bpm) {
+        manualBpm = Math.max(MANUAL_MIN, Math.min(MANUAL_MAX, Math.round(bpm * 10) / 10.0));
+        manualDeck.effectiveBpm = manualBpm;
+        manualDeck.trackBpm = manualBpm;
+    }
+
+    /** The deck of the fixed value: always there, playing, free-running at the typed tempo (no position, no grid). */
+    private Deck manualDeck() {
+        Deck d = manualDeck;
+        d.label = 1;
+        d.name = "Fixed value";
+        d.exactTempo = true;
+        d.hasTrack = true;
+        d.playing = true;
+        d.velocity = 1.0;
+        d.positionMs = -1;
+        d.effectiveBpm = manualBpm;
+        d.trackBpm = manualBpm;
+        return d;
     }
 
     void setSource(String deckKey) throws IOException {
@@ -166,16 +206,18 @@ final class LinkService {
     /** Sends a fixed tempo once so the user can check the connection and the mapping on the desk. */
     void sendTest() {
         Config c = config;
-        if (c.type().equals("os2l") || c.type().equals("chamsys")) {
+        if (c.type().equals("ableton")) {
+            return; // Ableton Link has its own status; there is no test message
+        }
+        if (c.type().equals("os2l") || isTap(c.type())) {
             // Eight beats at 120 BPM, off the beat thread so the call returns at once.
             Thread t = new Thread(() -> {
                 try {
                     for (int i = 0; i < 8; i++) {
-                        if (c.type().equals("os2l")) {
-                            os2l.beat(c.host(), c.port(), i == 0, i, 120.0);
+                        if (isTap(c.type())) {
+                            sendTaps(c);
                         } else {
-                            // Chamsys: one OSC message per beat
-                            sendOsc(c.host(), c.port(), c.address(), (float) 120.0);
+                            os2l.beat(c.host(), c.port(), i == 0, i, 120.0);
                         }
                         sentCount++;
                         lastBpm = 120.0;
@@ -183,11 +225,11 @@ final class LinkService {
                         Thread.sleep(500);
                     }
                 } catch (IOException e) {
-                    error = "Sending to " + c.host() + ":" + c.port() + " failed: " + e.getMessage();
+                    error = isTap(c.type()) ? tapError(c, e) : os2lError(c, e);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                 }
-            }, c.type().equals("chamsys") ? "chamsys-test" : "os2l-test");
+            }, isTap(c.type()) ? "tap-test" : "os2l-test");
             t.setDaemon(true);
             t.start();
             return;
@@ -195,59 +237,106 @@ final class LinkService {
         send(config, 120.0);
     }
 
+    /** Off by default each run: the user opts in to let the simulated tempos of the demo decks reach the desk. */
+    private volatile boolean sendDemo;
+
+    boolean sendDemo() {
+        return sendDemo;
+    }
+
+    void setSendDemo(boolean on) {
+        sendDemo = on;
+        if (on && error != null && error.startsWith("Demo mode")) {
+            error = null;
+        }
+    }
+
     private static String os2lError(Config c, IOException e) {
         return "No OS2L receiver at " + c.host() + ":" + c.port() + " (" + e.getMessage()
                 + "). Is the lighting program running with OS2L switched on?";
     }
 
-    /** OS2L: sends a beat when one of the leading deck passes. Runs every few milliseconds, so it must stay cheap. */
+    private static String tapError(Config c, IOException e) {
+        return "Sending to " + c.host() + ":" + c.port() + " failed: " + e.getMessage();
+    }
+
+    /** The OSC addresses of a ChamSys tap list ("/tap1, /tap2"): only entries that start with a slash, "/tap" when none. */
+    static java.util.List<String> tapAddresses(String list) {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        if (list != null) {
+            for (String a : list.split("[,;\\s]+")) {
+                if (a.startsWith("/") && a.length() > 1 && !out.contains(a)) {
+                    out.add(a);
+                }
+            }
+        }
+        if (out.isEmpty()) {
+            out.add(CHAMSYS_ADDRESS);
+        }
+        return out;
+    }
+
+    /** The types that send a tap on every beat: ChamSys (message without value) and Daslight (value 255, then 0). */
+    static boolean isTap(String type) {
+        return "chamsys".equals(type) || "daslight".equals(type);
+    }
+
+    /** Daslight reads a button from the value of an OSC message, so its tap is a press (255) and a release (0). */
+    static final float DASLIGHT_PRESS = 255f;
+    private static final java.util.concurrent.ScheduledExecutorService RELEASES =
+            java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "tap-release");
+                t.setDaemon(true);
+                return t;
+            });
+
+    /**
+     * A tap to every address of the list. ChamSys MagicQ maps an OSC message without argument to Tap to Time; Daslight
+     * ignores messages without value, so it gets the value 255 and, a few milliseconds later, 0.
+     */
+    void sendTaps(Config c) throws IOException {
+        java.util.List<String> addresses = tapAddresses(c.address());
+        boolean daslight = "daslight".equals(c.type());
+        try (DatagramSocket socket = new DatagramSocket()) {
+            InetAddress target = InetAddress.getByName(c.host());
+            for (String address : addresses) {
+                byte[] packet = daslight ? osc(address, DASLIGHT_PRESS) : oscTap(address);
+                socket.send(new DatagramPacket(packet, packet.length, target, c.port()));
+            }
+        }
+        if (daslight) {
+            RELEASES.schedule(() -> {
+                try (DatagramSocket socket = new DatagramSocket()) {
+                    InetAddress target = InetAddress.getByName(c.host());
+                    for (String address : addresses) {
+                        byte[] packet = osc(address, 0f);
+                        socket.send(new DatagramPacket(packet, packet.length, target, c.port()));
+                    }
+                } catch (IOException ignored) {
+                    // the press went out; a lost release only means the next press counts as a new one
+                }
+            }, 30, java.util.concurrent.TimeUnit.MILLISECONDS);
+        }
+    }
+
+    /** An OSC message with an empty type tag: address and no argument. */
+    static byte[] oscTap(String address) {
+        byte[] a = padded(address);
+        byte[] t = padded(",");
+        return ByteBuffer.allocate(a.length + t.length).put(a).put(t).array();
+    }
+
+    /** OS2L and ChamSys: sends a beat when one of the leading deck passes. Runs every few milliseconds, so it must stay cheap. */
     private void beatTick() {
         try {
             Config c = config;
-            if (!c.type().equals("os2l")) {
-                // For Chamsys, also send a beat - this is how it receives tempo (one message per beat)
-                if (c.type().equals("chamsys")) {
-                    Deck lead = leadingDeck();
-                    if (lead != null && lead.scope != null && "demo".equals(lead.scope.kind)) {
-                        return; // the demo tempo never reaches a real receiver; tick() explains it in the status
-                    }
-                    Os2lBeats.Beat beat = beats.next(lead, System.nanoTime());
-                    if (beat == null) {
-                        if (lead == null) {
-                            error = "No deck with tempo available (check that a track is loaded and playing)";
-                        } else if (!lead.hasTrack) {
-                            error = "Selected deck has no track loaded";
-                        } else if (lead.effectiveBpm <= 0) {
-                            error = "Track has no valid BPM";
-                        } else if (lead.beatTimes == null) {
-                            error = "Beat grid not loaded yet - wait for waveform to appear";
-                        } else {
-                            error = "Waiting for next beat...";
-                        }
-                        return;
-                    }
-                    long now = System.currentTimeMillis();
-                    if (now < beatRetryAt) {
-                        return;
-                    }
-                    try {
-                        // Send OSC beat for Chamsys: address + float BPM
-                        sendOsc(c.host(), c.port(), c.address(), (float) beat.bpm());
-                        sentCount++;
-                        lastBpm = beat.bpm();
-                        lastSentAt = now;
-                        error = null;
-                    } catch (IOException e) {
-                        error = "Sending to " + c.host() + ":" + c.port() + " failed: " + e.getMessage();
-                        beatRetryAt = now + 5000;
-                    }
-                    return;
-                }
+            boolean chamsys = isTap(c.type());
+            if (!c.type().equals("os2l") && !chamsys) {
                 return;
             }
             Deck lead = leadingDeck();
-            if (lead != null && lead.scope != null && "demo".equals(lead.scope.kind)) {
-                return; // the demo tempo never reaches a real receiver; tick() explains it in the status
+            if (lead != null && lead.scope != null && "demo".equals(lead.scope.kind) && !sendDemo) {
+                return; // the demo tempo reaches a receiver only with "Send demo data"; tick() explains it in the status
             }
             Os2lBeats.Beat beat = beats.next(lead, System.nanoTime());
             if (beat == null) {
@@ -258,15 +347,19 @@ final class LinkService {
                 return;
             }
             try {
-                os2l.beat(c.host(), c.port(), beat.change(), beat.pos(), beat.bpm());
+                if (chamsys) {
+                    sendTaps(c);
+                } else {
+                    os2l.beat(c.host(), c.port(), beat.change(), beat.pos(), beat.bpm());
+                }
                 sentCount++;
                 lastBpm = beat.bpm();
                 lastSentAt = now;
-                if (error != null && error.startsWith("No OS2L")) {
+                if (error != null && (error.startsWith("No OS2L") || error.startsWith("Sending to"))) {
                     error = null;
                 }
             } catch (IOException e) {
-                error = os2lError(c, e);
+                error = chamsys ? tapError(c, e) : os2lError(c, e);
                 beatRetryAt = now + 5000;
             }
         } catch (RuntimeException e) {
@@ -299,6 +392,9 @@ final class LinkService {
      */
     Deck leadingDeck() {
         String src = source;
+        if (MANUAL.equals(src)) {
+            return manualDeck();
+        }
         if (!AUTO.equals(src)) {
             for (Deck d : hub.allDecks()) {
                 if (src.equals(d.key())) {
@@ -331,6 +427,7 @@ final class LinkService {
         for (Deck d : hub.allDecks()) {
             d.sendingBpm = d == lead;
         }
+        manualDeck.sendingBpm = manualDeck == lead; // so its changes are logged too ("Sent tempo of deck Fixed value")
     }
 
     private void tick() {
@@ -341,7 +438,7 @@ final class LinkService {
                 return;
             }
             Deck lead = leadingDeck();
-            sendingDeck = lead == null ? null : lead.key();
+            sendingDeck = lead == null ? null : keyOf(lead);
             markSending(lead);
             if (lead == null) {
                 if (AUTO.equals(source) && error != null && error.startsWith("The chosen deck")) {
@@ -352,24 +449,29 @@ final class LinkService {
                 }
                 return;
             }
-            if (lead.scope != null && "demo".equals(lead.scope.kind)) {
-                // Simulated tempos must never reach a real desk.
+            if (lead.scope != null && "demo".equals(lead.scope.kind) && !sendDemo) {
+                // Simulated tempos reach a desk only when the user ticked "Send demo data".
                 error = "Demo mode: nothing is sent to the desk.";
                 return;
             }
             if (error != null && (error.startsWith("The chosen deck") || error.startsWith("Demo mode"))) {
                 error = null;
             }
-            if (c.type().equals("os2l") || c.type().equals("chamsys")) {
+            if (c.type().equals("ableton")) {
+                lastBpm = lead.stableBpm(System.nanoTime()); // the tempo goes out through the Ableton Link peer, which follows the same deck
+                return;
+            }
+            if (c.type().equals("os2l") || isTap(c.type())) {
                 return; // beats go out from beatTick()
             }
-            double bpm = lead.effectiveBpm;
+            double bpm = lead.stableBpm(System.nanoTime());
             if (c.type().equals("ma2")) {
                 // The grandMA2 command line takes no fractional values ("At 174.0" does nothing), so whole BPM only.
                 bpm = Math.round(bpm);
             }
             long now = System.currentTimeMillis();
-            boolean changed = lastBpm == null || Math.abs(bpm - lastBpm) >= 0.1;
+            // Half a tenth: 138.0 - 137.9 is 0.0999… in floating point, so ">= 0.1" missed changes of one tenth.
+            boolean changed = lastBpm == null || Math.abs(bpm - lastBpm) >= 0.05;
             if (now < retryAt) {
                 return; // the last attempt failed; do not hammer the desk
             }

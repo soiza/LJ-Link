@@ -16,7 +16,7 @@ jobs:
       matrix:
         include:
           - name: macOS (Apple Silicon)
-            os: macos-14
+            os: macos-15
             suffix: macos-arm64
             ext: dmg
           - name: macOS (Intel)
@@ -34,6 +34,8 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
+          # Keeps the downloaded libraries between runs, so Maven Central is asked less often (it answers 429 when busy).
+          cache: gradle
 
       # jpackage needs WiX 3 to build .exe installers.
       - name: Install WiX (Windows)

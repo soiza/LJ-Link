@@ -189,6 +189,7 @@ select, input {
 .chip.sync { border-color: #2f7bff; color: #6ea2ff; }
 .chip.pause { border-color: #555; color: #888; }
 .chip.send { border-color: #22c55e; color: #22c55e; font-size: 11px; padding: 0 6px; white-space: nowrap; }
+.chip.abl { border-color: #e0e0e0; color: #e0e0e0; font-size: 11px; padding: 0 6px; white-space: nowrap; }
 .key-box { margin-left: auto; font-size: 14px; color: var(--text); }
 .key-box small { font-size: 9px; letter-spacing: .12em; color: var(--muted); margin-right: 6px; }
 .deck-waves { opacity: .75; }
@@ -334,6 +335,9 @@ label.check input { width: 20px; height: 20px; min-height: 0; accent-color: var(
 .bpm-option { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; cursor: pointer; }
 .bpm-option span { display: flex; flex-direction: column; }
 .bpm-option small { color: var(--muted); font-size: 13px; }
+.bpm-manual { display: flex; align-items: center; gap: 10px; margin: 0 0 14px; padding: 0 12px; color: var(--muted); font-size: 14px; }
+.bpm-manual input[type=range] { flex: 1; min-width: 0; }
+.bpm-manual input[type=number] { width: 84px; }
 .bpm-option.sending { border-color: var(--accent); box-shadow: inset 4px 0 0 var(--accent); }
 .note.warn { border-color: var(--warn); }
 .bpm-option input[type="radio"] { width: 18px; height: 18px; min-height: 0; flex: 0 0 18px; margin: 0; padding: 0; accent-color: var(--accent); }

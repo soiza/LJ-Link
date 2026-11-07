@@ -61,6 +61,7 @@ public final class Main {
         Hub hub = new Hub();
         Session session = new Session(hub);
         LinkService link = new LinkService(hub);
+        AbletonLinkPeer ableton = new AbletonLinkPeer(hub, link);
 
         Javalin app = Javalin.create(config -> {
             config.staticFiles.add("/web", Location.CLASSPATH);
@@ -80,7 +81,7 @@ public final class Main {
                 ctx.status(403);
                 return;
             }
-            ctx.contentType("text/plain; charset=utf-8").result(Diagnostics.report(hub, session, link));
+            ctx.contentType("text/plain; charset=utf-8").result(Diagnostics.report(hub, session, link, ableton));
         });
         app.get("/api/version", ctx -> {
             Updater.Release r = Updater.latestCached();
@@ -132,7 +133,7 @@ public final class Main {
                 ctx.status(403);
                 return;
             }
-            ctx.json(Map.of("config", link.config(), "status", link.status(), "decks", link.candidates()));
+            ctx.json(Map.of("config", link.config(), "status", link.status(), "decks", link.candidates(), "sendDemo", link.sendDemo(), "manualBpm", link.manualBpm()));
         });
         app.post("/api/link", ctx -> control(ctx, () -> {
             try {
@@ -156,6 +157,35 @@ public final class Main {
             }
         }));
         app.post("/api/link/test", ctx -> control(ctx, link::sendTest));
+        app.post("/api/link/senddemo", ctx -> control(ctx, () -> {
+            try {
+                link.setSendDemo(Hub.JSON.readTree(ctx.body()).path("on").asBoolean(false));
+            } catch (java.io.IOException e) {
+                ctx.status(500);
+            }
+        }));
+        app.post("/api/link/manual", ctx -> control(ctx, () -> {
+            try {
+                link.setManualBpm(Hub.JSON.readTree(ctx.body()).path("bpm").asDouble(120));
+            } catch (java.io.IOException e) {
+                ctx.status(500);
+            }
+        }));
+        app.get("/api/ableton", ctx -> {
+            if (!isLocal(ctx)) {
+                ctx.status(403);
+                return;
+            }
+            ctx.json(ableton.status());
+        });
+        app.post("/api/ableton", ctx -> control(ctx, () -> {
+            try {
+                var body = Hub.JSON.readTree(ctx.body());
+                ableton.configure(body.path("enabled").asBoolean(false), body.path("phase").asBoolean(true));
+            } catch (java.io.IOException e) {
+                ctx.status(400);
+            }
+        }));
         // Control endpoints are only available on the computer running LJ Link, not to tablets in the LAN.
         app.post("/api/search/start", ctx -> control(ctx, session::startSearch));
         app.post("/api/denon/start", ctx -> control(ctx, session::startSearch));
