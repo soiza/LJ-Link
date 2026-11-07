@@ -213,6 +213,17 @@ final class LinkService {
                     }
                     Os2lBeats.Beat beat = beats.next(lead, System.nanoTime());
                     if (beat == null) {
+                        if (lead == null) {
+                            error = "No deck with tempo available (check that a track is loaded and playing)";
+                        } else if (!lead.hasTrack) {
+                            error = "Selected deck has no track loaded";
+                        } else if (lead.effectiveBpm <= 0) {
+                            error = "Track has no valid BPM";
+                        } else if (lead.beatTimes == null) {
+                            error = "Beat grid not loaded yet - wait for waveform to appear";
+                        } else {
+                            error = "Waiting for next beat...";
+                        }
                         return;
                     }
                     long now = System.currentTimeMillis();
@@ -225,6 +236,7 @@ final class LinkService {
                         sentCount++;
                         lastBpm = beat.bpm();
                         lastSentAt = now;
+                        error = null;
                     } catch (IOException e) {
                         error = "Sending to " + c.host() + ":" + c.port() + " failed: " + e.getMessage();
                         beatRetryAt = now + 5000;

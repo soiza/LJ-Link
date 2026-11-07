@@ -271,10 +271,10 @@ function linkBody() {
   const p = LINK_PRESETS[preset];
   const text = $("link-text").value;
   return {
-    type: p.type,
+    type: preset,
     host: $("link-host").value || "127.0.0.1",
     port: Number($("link-port").value) || 8000,
-    address: p.type === "osc" ? text : "/ljlinkpro/bpm",
+    address: preset === "chamsys" ? ($("link-text").value || "/chamsys/bpm") : (p.type === "osc" ? text : "/ljlinkpro/bpm"),
     command: p.type === "ma" || p.type === "ma2" ? text : "",
     user: p.login ? $("link-user").value : "",
     password: p.login ? $("link-pass").value : "",
